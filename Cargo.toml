@@ -1,6 +1,6 @@
 [package]
 name = "pycrdt"
-version = "0.14.13+oxidian.1"
+version = "0.14.13+oxidian.2"
 edition = "2024"
 
 [lib]

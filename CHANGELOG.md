@@ -1,5 +1,12 @@
 # Version history
 
+## 0.14.13+oxidian.2
+
+- Build against yrs 0.28.2 from oxidian/y-crdt v0.28.2-oxidian.2, which decodes, encodes and drops
+  `Any` values without recursing a level at a time and refuses none for its depth, in place of the
+  256-level limit.
+- Read an `Any` value into Python without recursing a level at a time.
+
 ## 0.14.13+oxidian.1
 
 - Build against yrs 0.28.2 from oxidian/y-crdt, which deletes and garbage-collects nested shared
