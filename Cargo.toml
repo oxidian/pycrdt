@@ -1,6 +1,6 @@
 [package]
 name = "pycrdt"
-version = "0.14.13"
+version = "0.14.13+oxidian.1"
 edition = "2024"
 
 [lib]
@@ -11,5 +11,5 @@ crate-type = ["cdylib"]
 futures-task = "0.3.34"
 serde = "1.0.229"
 serde_json = "1.0.154"
-yrs = { version = "0.28.0", features = ["sync"] }
+yrs = { git = "https://github.com/oxidian/y-crdt", rev = "e6e1af5b441517b2da87e10142f1f20002c35012", features = ["sync"] }
 pyo3 = "0.30.1"

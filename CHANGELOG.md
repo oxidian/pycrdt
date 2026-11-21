@@ -1,5 +1,10 @@
 # Version history
 
+## 0.14.13+oxidian.1
+
+- Build against yrs 0.28.2 from oxidian/y-crdt, which deletes and garbage-collects nested shared
+  types without recursion and refuses `Any` values nested deeper than 256 levels.
+
 ## 0.14.13
 
 - Stop publishing 32-bit wheels.
