@@ -472,7 +472,7 @@ checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 [[package]]
 name = "yrs"
 version = "0.28.2"
-source = "git+https://github.com/oxidian/y-crdt?rev=e6e1af5b441517b2da87e10142f1f20002c35012#e6e1af5b441517b2da87e10142f1f20002c35012"
+source = "git+https://github.com/oxidian/y-crdt?rev=d74f27ea7b178a2081f3ad1bffaca9f39a8b8c0f#d74f27ea7b178a2081f3ad1bffaca9f39a8b8c0f"
 dependencies = [
  "arc-swap",
  "async-lock",

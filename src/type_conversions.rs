@@ -187,38 +187,81 @@ impl<'py, 'a> IntoPyObject<'py> for EntryChangeWrapper<'a> {
     }
 }
 
-impl ToPython for Any {
-    fn into_py<'py>(self, py: Python<'py>) -> Bound<'py, PyAny> {
+/// A list or a dict an [Any] array or map is being read into, with the values it has still to read
+/// and, for a dict, the key of the value read last.
+enum Reading<'a, 'py> {
+    List(std::slice::Iter<'a, Any>, Vec<Bound<'py, PyAny>>),
+    Dict(std::collections::hash_map::Iter<'a, String, Any>, Bound<'py, PyDict>, Option<&'a String>),
+}
+
+impl<'a, 'py> Reading<'a, 'py> {
+    /// Holds `read`, the value read last if it is one of this container's, and hands back the value
+    /// to read next, if this container holds another.
+    fn next_after(&mut self, read: Option<Bound<'py, PyAny>>) -> Option<&'a Any> {
         match self {
-            Any::Null | Any::Undefined => py.None().into_bound(py),
-            Any::Bool(v) => PyBool::new(py, v).into_bound_py_any(py).unwrap(),
-            Any::Number(Number::Float(v)) => PyFloat::new(py, v).into_bound_py_any(py).unwrap(),
-            Any::Number(Number::Int(v)) => {
-                if (Number::I64_MIN_SAFE_INTEGER..=Number::I64_MAX_SAFE_INTEGER).contains(&v) {
-                    PyFloat::new(py, v as f64).into_bound_py_any(py).unwrap()
-                } else {
-                    v.into_pyobject(py).unwrap().into_bound_py_any(py).unwrap()
-                }
-            },
-            Any::String(v) => v.into_pyobject(py).unwrap().into_bound_py_any(py).unwrap(),
-            Any::Buffer(v) => PyByteArray::new(py, v.as_ref()).into_bound_py_any(py).unwrap(),
-            Any::Array(v) => {
-                let mut a = Vec::new();
-                for value in v.iter() {
-                    let value = value.to_owned();
-                    a.push(value);
-                }
-                a.into_py(py).into_bound_py_any(py).unwrap()
+            Reading::List(items, list) => {
+                list.extend(read);
+                items.next()
             }
-            Any::Map(v) => {
-                let val = PyDict::new(py);
-                for (k, v) in v.iter() {
-                    let value = v.to_owned();
-                    val.set_item(k, value.into_py(py)).unwrap();
+            Reading::Dict(entries, dict, key) => {
+                if let Some(read) = read {
+                    dict.set_item(key.take().expect("a key for every value read"), read).unwrap();
                 }
-                val.into_bound_py_any(py).unwrap()
+                let (next_key, value) = entries.next()?;
+                *key = Some(next_key);
+                Some(value)
             }
         }
+    }
+
+    fn into_object(self, py: Python<'py>) -> Bound<'py, PyAny> {
+        match self {
+            Reading::List(_, list) => PyList::new(py, list).unwrap().into_any(),
+            Reading::Dict(_, dict, _) => dict.into_any(),
+        }
+    }
+}
+
+impl ToPython for Any {
+    fn into_py<'py>(self, py: Python<'py>) -> Bound<'py, PyAny> {
+        // Arrays and maps nest as deep as the bytes they were decoded from ran, so the lists and
+        // dicts still being filled are kept here rather than on the native stack.
+        let mut open: Vec<Reading<'_, 'py>> = Vec::new();
+        let mut next = Some(&self);
+        let mut read = None;
+        loop {
+            match next {
+                Some(Any::Array(items)) => open.push(Reading::List(items.iter(), Vec::with_capacity(items.len()))),
+                Some(Any::Map(entries)) => open.push(Reading::Dict(entries.iter(), PyDict::new(py), None)),
+                Some(leaf) => read = Some(leaf_into_py(leaf, py)),
+                None => {}
+            }
+            let Some(container) = open.last_mut() else {
+                return read.expect("a value read before none is left open");
+            };
+            next = container.next_after(read.take());
+            if next.is_none() {
+                read = open.pop().map(|container| container.into_object(py));
+            }
+        }
+    }
+}
+
+fn leaf_into_py<'py>(leaf: &Any, py: Python<'py>) -> Bound<'py, PyAny> {
+    match leaf {
+        Any::Bool(v) => PyBool::new(py, *v).into_bound_py_any(py).unwrap(),
+        Any::Number(Number::Float(v)) => PyFloat::new(py, *v).into_bound_py_any(py).unwrap(),
+        Any::Number(Number::Int(v)) => {
+            if (Number::I64_MIN_SAFE_INTEGER..=Number::I64_MAX_SAFE_INTEGER).contains(v) {
+                PyFloat::new(py, *v as f64).into_bound_py_any(py).unwrap()
+            } else {
+                v.into_pyobject(py).unwrap().into_bound_py_any(py).unwrap()
+            }
+        },
+        Any::String(v) => v.as_ref().into_pyobject(py).unwrap().into_bound_py_any(py).unwrap(),
+        Any::Buffer(v) => PyByteArray::new(py, v.as_ref()).into_bound_py_any(py).unwrap(),
+        Any::Null | Any::Undefined => py.None().into_bound(py),
+        Any::Array(_) | Any::Map(_) => unreachable!("an array or a map is read into a list or a dict"),
     }
 }
 

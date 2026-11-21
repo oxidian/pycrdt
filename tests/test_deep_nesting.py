@@ -1,5 +1,6 @@
 """Deeply nested documents must not overflow the stack of the thread that handles them."""
 
+import random
 import threading
 
 import pytest
@@ -40,16 +41,20 @@ def nested_update(kind: str, levels: int, *, deleted: bool) -> bytes:
     return b"".join(parts)
 
 
-def nested_any_update(levels: int) -> bytes:
-    """A v1 update holding one value nested `levels` arrays deep in a root array."""
-    value = bytes([117, 1]) * levels + bytes([126])
+ANY_CONTENT = 8
+NESTED_VALUE = {"arrays": bytes([117, 1]), "maps": bytes([118, 1, 1]) + b"k"}
+
+
+def nested_value_update(shape: str, levels: int) -> bytes:
+    """A v1 update holding, in a root array, a null nested `levels` arrays or maps deep."""
+    value = NESTED_VALUE[shape] * levels + bytes([126])
     return b"".join(
         [
             write_var_uint(1),
             write_var_uint(1),
             write_var_uint(1),
             write_var_uint(0),
-            bytes([8]),
+            bytes([ANY_CONTENT]),
             write_var_uint(1),
             write_var_uint(1),
             b"a",
@@ -58,6 +63,17 @@ def nested_any_update(levels: int) -> bytes:
             write_var_uint(0),
         ]
     )
+
+
+def nesting_of(value) -> int:
+    """How many lists or dicts, each holding only the next, a value read from
+    `nested_value_update` nests its null inside."""
+    levels = 0
+    while isinstance(value, (list, dict)) and len(value) == 1:
+        value = value[0] if isinstance(value, list) else value["k"]
+        levels += 1
+    assert value is None
+    return levels
 
 
 def on_small_stack(function):
@@ -106,21 +122,83 @@ def test_deleting_the_top_of_a_deep_nesting(kind):
     assert on_small_stack(delete_top) is None
 
 
-def test_deeply_nested_value_is_refused():
-    update = nested_any_update(LEVELS)
-    raised = on_small_stack(lambda: Doc().apply_update(update))
-    assert isinstance(raised, ValueError)
+@pytest.mark.parametrize("shape", sorted(NESTED_VALUE))
+def test_reading_encoding_and_deleting_a_deeply_nested_value(shape):
+    update = nested_value_update(shape, LEVELS)
+    read: list[int] = []
+
+    def read_encode_and_delete() -> None:
+        doc = Doc()
+        doc.apply_update(update)
+        read.append(nesting_of(doc.get("a", type=Array)[0]))
+        again = Doc()
+        again.apply_update(doc.get_update())
+        read.append(nesting_of(again.get("a", type=Array)[0]))
+        del doc.get("a", type=Array)[0]
+
+    assert on_small_stack(read_encode_and_delete) is None
+    assert read == [LEVELS, LEVELS]
 
 
-def test_value_at_the_nesting_limit_is_accepted():
-    doc = Doc()
-    doc.apply_update(nested_any_update(256))
-    value = doc.get("a", type=Array)[0]
-    for _ in range(255):
-        (value,) = value
-    assert value == [None]
+def random_value(rng: random.Random, depth: int):
+    kinds = ["none", "bool", "int", "big int", "float", "str", "bytes"]
+    if depth < 5:
+        kinds += ["list", "tuple", "dict"] * 2
+    kind = rng.choice(kinds)
+    if kind == "none":
+        return None
+    if kind == "bool":
+        return rng.random() < 0.5
+    if kind == "int":
+        return rng.randint(-(2**53) + 1, 2**53 - 1)
+    if kind == "big int":
+        # Odd past 2**53, so no float holds it exactly and it is encoded as a bigint.
+        return rng.choice([-1, 1]) * (2**53 + 2 * rng.randrange(2**51) + 1)
+    if kind == "float":
+        return rng.uniform(-1e9, 1e9)
+    if kind == "str":
+        return "".join(rng.choice("ab\u00e9\U0001f600") for _ in range(rng.randint(0, 3)))
+    if kind == "bytes":
+        return bytes(rng.randrange(256) for _ in range(rng.randint(0, 3)))
+    items = [random_value(rng, depth + 1) for _ in range(rng.randint(0, 3))]
+    if kind == "list":
+        return items
+    if kind == "tuple":
+        return tuple(items)
+    return {f"k{index}": item for index, item in enumerate(items)}
 
 
-def test_value_past_the_nesting_limit_is_refused():
-    with pytest.raises(ValueError):
-        Doc().apply_update(nested_any_update(257))
+def read_back(value):
+    """`value` as pycrdt reads it back once written: an integer a float holds exactly as a float,
+    bytes as a bytearray and a tuple as a list."""
+    if isinstance(value, bool) or value is None or isinstance(value, (str, float)):
+        return value
+    if isinstance(value, int):
+        return float(value) if -(2**53) < value < 2**53 else value
+    if isinstance(value, bytes):
+        return bytearray(value)
+    if isinstance(value, dict):
+        return {key: read_back(item) for key, item in value.items()}
+    return [read_back(item) for item in value]
+
+
+def same(left, right) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same(a, b) for a, b in zip(left, right))
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same(left[key], right[key]) for key in left)
+    return left == right
+
+
+def test_a_value_reads_back_as_written():
+    rng = random.Random(14)
+    for _ in range(500):
+        value = random_value(rng, 0)
+        doc = Doc()
+        doc.get("m", type=Map)["k"] = value
+        again = Doc()
+        again.apply_update(doc.get_update())
+        for read in (doc.get("m", type=Map)["k"], again.get("m", type=Map)["k"]):
+            assert same(read, read_back(value)), (value, read)
